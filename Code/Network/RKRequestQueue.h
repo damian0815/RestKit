@@ -139,6 +139,7 @@
  @param request The request to be added to the queue.
  */
 - (void)addRequest:(RKRequest *)request;
+- (void)addRequestToFrontOfQueue:(RKRequest *)request;
 
 /**
  Cancel a request that is in progress.
@@ -168,8 +169,9 @@
 
 /**
  Cancel all active or pending requests.
+ @return The requests that were cancelled.
  */
-- (void)cancelAllRequests;
+- (NSArray*)cancelAllRequests;
 
 /**
  Determine if a given request is currently in this queue.

@@ -267,12 +267,13 @@ static const NSTimeInterval kFlushDelay = 0.3;
         [self performSelectorOnMainThread:@selector(loadNextInQueue) withObject:nil waitUntilDone:NO];
         return;
     }
-
+	
     // Make sure that the Request Queue does not fire off any requests until the Reachability state has been determined.
     if (self.suspended) {
         _queueTimer = nil;
         [self loadNextInQueueDelayed];
 
+		//RKLogInfo(@"Deferring request loading for queue %@ due to suspension", self );
         RKLogTrace(@"Deferring request loading for queue %@ due to suspension", self);
         return;
     }
@@ -280,25 +281,29 @@ static const NSTimeInterval kFlushDelay = 0.3;
     NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
     _queueTimer = nil;
 
-    @synchronized(self) {
-        RKRequest* request = [self nextRequest];
-        while (request && self.loadingCount < _concurrentRequestsLimit) {
-            RKLogTrace(@"Processing request %@ in queue %@", request, self);
-            if ([_delegate respondsToSelector:@selector(requestQueue:willSendRequest:)]) {
-                [_delegate requestQueue:self willSendRequest:request];
-            }
-
-            [self addLoadingRequest:request];
-            RKLogDebug(@"Sent request %@ from queue %@. Loading count = %ld of %ld", request, self, (long) self.loadingCount, (long) _concurrentRequestsLimit);
-            [request sendAsynchronously];
-
-            if ([_delegate respondsToSelector:@selector(requestQueue:didSendRequest:)]) {
-                [_delegate requestQueue:self didSendRequest:request];
-            }
-
-            request = [self nextRequest];
-        }
-    }
+	BOOL shouldContinue = YES;
+	while ( shouldContinue && !self.suspended ) {
+		@synchronized(self) {
+			RKRequest* request = [self nextRequest];
+			if (request && self.loadingCount < _concurrentRequestsLimit) {
+				RKLogTrace(@"Processing request %@ in queue %@", request, self);
+				if ([_delegate respondsToSelector:@selector(requestQueue:willSendRequest:)]) {
+					[_delegate requestQueue:self willSendRequest:request];
+				}
+				
+				[self addLoadingRequest:request];
+				RKLogTrace(@"Sent request %@ from queue %@. Loading count = %ld of %ld", request, self, (long) self.loadingCount, (long) _concurrentRequestsLimit);
+				[request sendAsynchronously];
+				
+				if ([_delegate respondsToSelector:@selector(requestQueue:didSendRequest:)]) {
+					[_delegate requestQueue:self didSendRequest:request];
+				}
+				
+			} else {
+				shouldContinue = NO;
+			}
+		}
+	}
 
     if (_requests.count && !_suspended) {
         [self loadNextInQueueDelayed];
@@ -336,12 +341,31 @@ static const NSTimeInterval kFlushDelay = 0.3;
     }
 }
 
-- (void)addRequest:(RKRequest*)request {
+- (void)addRequestToFrontOfQueue:(RKRequest *)request
+{
+	NSAssert( self.suspended, @"can only do this if the queue is suspended" );
+	NSAssert( !request.isLoading, @"request is already loading");
+	NSAssert( ![self containsRequest:request], @"request already on queue" );
+	NSAssert( ![[_requests objectAtIndex:0] isLoading], @"request at front of queue is already loading" );
+	
+	[self addRequest:request atIndex:0];
+}
+
+- (void)addRequest:(RKRequest *)request {
+	[self addRequest:request atIndex:-1];
+}
+
+- (void)addRequest:(RKRequest*)request atIndex:(int)index {
     RKLogTrace(@"Request %@ added to queue %@", request, self);
     NSAssert(![self containsRequest:request], @"Attempting to add the same request multiple times");
 
     @synchronized(self) {
-        [_requests addObject:request];
+		if ( index == -1 ) {
+			[_requests addObject:request];
+		} else {
+			NSAssert( index >= 0 && index < [_requests count], @"invalid insert index" );
+			[_requests insertObject:request atIndex:index];
+		}
         request.queue = self;
     }
 
@@ -392,7 +416,7 @@ static const NSTimeInterval kFlushDelay = 0.3;
         RKLogDebug(@"Cancelled undispatched request %@ and removed from queue %@", request, self);
 
         [self removeRequest:request];
-        request.delegate = nil;
+        //request.delegate = nil;
 
         if ([_delegate respondsToSelector:@selector(requestQueue:didCancelRequest:)]) {
             [_delegate requestQueue:self didCancelRequest:request];
@@ -401,7 +425,7 @@ static const NSTimeInterval kFlushDelay = 0.3;
         RKLogDebug(@"Cancelled loading request %@ and removed from queue %@", request, self);
 
         [request cancel];
-        request.delegate = nil;
+        //request.delegate = nil;
 
         if ([_delegate respondsToSelector:@selector(requestQueue:didCancelRequest:)]) {
             [_delegate requestQueue:self didCancelRequest:request];
@@ -446,15 +470,19 @@ static const NSTimeInterval kFlushDelay = 0.3;
     [pool drain];
 }
 
-- (void)cancelAllRequests {
+- (NSArray*)cancelAllRequests {
     RKLogDebug(@"Cancelling all request in queue %@", self);
 
+	NSMutableArray* cancelledRequests = [[NSMutableArray alloc] init];
     NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
     NSArray* requestsCopy = [NSArray arrayWithArray:_requests];
     for (RKRequest* request in requestsCopy) {
+		RKLogInfo(@"cancelled request for %@", [[request URL] absoluteString] );
+		[cancelledRequests addObject:request];
         [self cancelRequest:request loadNext:NO];
     }
     [pool drain];
+	return cancelledRequests;
 }
 
 - (void)start {
