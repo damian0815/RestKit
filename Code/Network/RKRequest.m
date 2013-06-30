@@ -176,8 +176,10 @@ RKRequestMethod RKRequestMethodTypeFromName(NSString *methodName) {
         RKLogWarning(@"Request was reset while loading: %@. Canceling.", self);
         [self cancel];
     }
+	NSData* oldBody = [[[_URLRequest HTTPBody] retain] autorelease];
     [_URLRequest release];
     _URLRequest = [[NSMutableURLRequest alloc] initWithURL:_URL];
+	_URLRequest.HTTPBody = oldBody;
     [_URLRequest setCachePolicy:NSURLRequestReloadIgnoringCacheData];
     [_connection release];
     _connection = nil;
